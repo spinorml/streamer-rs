@@ -1,23 +1,23 @@
 /*
  * SpinorML Ltd 🚀 AGPL-3.0 License - https://spinorml.com/license
  *
- * Minimal MP4 player demo.
+ * Multi-camera MP4 player demo.
  *
  * Usage:
  *   cargo run --example player --features gstreamer              # downloads a test clip
  *   cargo run --example player --features gstreamer -- video.mp4 # use your own file
  *
- * Decodes via GstVideoSource (GStreamer backend) and renders each frame
- * as an egui texture, demonstrating the full VideoSource → FrameData::to_bytes() path.
+ * Opens the same file as two named sources ("cam0", "cam1") via GstMultiVideoSource
+ * and renders them side by side in an egui window.
  */
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use eframe::egui;
-use gstreamer::prelude::{ElementExt, GstObjectExt};
-use streamer_rs::{FrameData, GstVideoSource, VideoSource};
+use streamer_rs::{FrameData, GstMultiVideoSource, GstVideoSource, VideoSource};
 
 fn main() {
     let path = match std::env::args().nth(1) {
@@ -25,7 +25,7 @@ fn main() {
         None => download_test_video(),
     };
 
-    let (tx, rx) = mpsc::sync_channel::<egui::ColorImage>(4);
+    let (tx, rx) = mpsc::sync_channel::<(String, egui::ColorImage)>(8);
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -34,8 +34,8 @@ fn main() {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("streamer-rs player")
-            .with_inner_size([960.0, 560.0]),
+            .with_title("streamer-rs player — multi-camera")
+            .with_inner_size([1280.0, 560.0]),
         ..Default::default()
     };
 
@@ -51,57 +51,38 @@ fn main() {
 // Decode loop — runs in a background thread on its own tokio runtime
 // ---------------------------------------------------------------------------
 
-async fn decode_loop(path: PathBuf, tx: mpsc::SyncSender<egui::ColorImage>) {
-    eprintln!("[decode] opening file: {}", path.display());
-    let mut source = match GstVideoSource::from_file(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[decode] error: could not open {}: {e}", path.display());
-            return;
-        }
-    };
-    eprintln!("[decode] pipeline created");
+async fn decode_loop(path: PathBuf, tx: mpsc::SyncSender<(String, egui::ColorImage)>) {
+    let sources = [("cam0", &path), ("cam1", &path)];
+    let mut multi = GstMultiVideoSource::new();
 
-    // Spawn a GStreamer bus monitor so we see errors/warnings/state changes.
-    let bus = source.pipeline.bus().expect("pipeline has no bus");
-    std::thread::spawn(move || {
-        use gstreamer::MessageView;
-        for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
-            match msg.view() {
-                MessageView::Error(e) => {
-                    eprintln!("[gst bus] ERROR from {:?}: {}", msg.src().map(|s| s.name()), e.error());
-                    eprintln!("[gst bus]   debug: {:?}", e.debug());
-                    break;
-                }
-                MessageView::Warning(w) => {
-                    eprintln!("[gst bus] WARNING: {}", w.error());
-                }
-                MessageView::StateChanged(sc) => {
-                    eprintln!("[gst bus] {:?} state: {:?} → {:?}", msg.src().map(|s| s.name()), sc.old(), sc.current());
-                }
-                MessageView::Eos(_) => {
-                    eprintln!("[gst bus] EOS");
-                    break;
-                }
-                _ => {}
+    for (id, p) in &sources {
+        match GstVideoSource::from_file(p) {
+            Ok(s) => { multi.add(*id, s); }
+            Err(e) => {
+                eprintln!("error: could not open {id} ({}): {e}", p.display());
+                return;
             }
         }
-    });
+    }
 
-    eprintln!("[decode] starting pipeline...");
-    if let Err(e) = source.start().await {
-        eprintln!("[decode] error: failed to start pipeline: {e}");
+    if let Err(e) = multi.start().await {
+        eprintln!("error: failed to start pipelines: {e}");
         return;
     }
-    eprintln!("[decode] pipeline playing, waiting for frames...");
 
     loop {
-        match source.next_frame().await {
+        match multi.next_frame().await {
             Ok(Some(frame)) => {
+                let id = frame
+                    .source_id
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .to_string();
+
                 let bytes = match frame.data.to_bytes().await {
                     Ok(b) => b,
                     Err(e) => {
-                        eprintln!("error: frame read failed: {e}");
+                        eprintln!("error: frame read failed for {id}: {e}");
                         break;
                     }
                 };
@@ -110,11 +91,11 @@ async fn decode_loop(path: PathBuf, tx: mpsc::SyncSender<egui::ColorImage>) {
                 let image =
                     egui::ColorImage::from_rgb([frame.width as usize, frame.height as usize], &rgb);
 
-                if tx.send(image).is_err() {
+                if tx.send((id, image)).is_err() {
                     break; // window was closed
                 }
             }
-            Ok(None) => break, // end of stream
+            Ok(None) => break,
             Err(e) => {
                 eprintln!("error: decode failed: {e}");
                 break;
@@ -122,7 +103,7 @@ async fn decode_loop(path: PathBuf, tx: mpsc::SyncSender<egui::ColorImage>) {
         }
     }
 
-    let _ = source.stop().await;
+    let _ = multi.stop().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,52 +111,55 @@ async fn decode_loop(path: PathBuf, tx: mpsc::SyncSender<egui::ColorImage>) {
 // ---------------------------------------------------------------------------
 
 struct PlayerApp {
-    rx: mpsc::Receiver<egui::ColorImage>,
-    texture: Option<egui::TextureHandle>,
-    frame_count: u64,
+    rx: mpsc::Receiver<(String, egui::ColorImage)>,
+    textures: HashMap<String, egui::TextureHandle>,
+    frame_counts: HashMap<String, u64>,
 }
 
 impl PlayerApp {
-    fn new(rx: mpsc::Receiver<egui::ColorImage>) -> Self {
-        Self {
-            rx,
-            texture: None,
-            frame_count: 0,
-        }
+    fn new(rx: mpsc::Receiver<(String, egui::ColorImage)>) -> Self {
+        Self { rx, textures: HashMap::new(), frame_counts: HashMap::new() }
     }
 }
 
 impl eframe::App for PlayerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Drain the channel; keep only the latest frame to avoid falling behind.
-        while let Ok(image) = self.rx.try_recv() {
-            self.texture = Some(ctx.load_texture("frame", image, egui::TextureOptions::LINEAR));
-            self.frame_count += 1;
+        while let Ok((id, image)) = self.rx.try_recv() {
+            let key = format!("frame_{id}");
+            self.textures.insert(
+                id.clone(),
+                ctx.load_texture(key, image, egui::TextureOptions::LINEAR),
+            );
+            *self.frame_counts.entry(id).or_insert(0) += 1;
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            match &self.texture {
-                Some(texture) => {
-                    // Scale to fit the panel while preserving aspect ratio.
-                    let tex_size = texture.size_vec2();
-                    let available = ui.available_size();
-                    let scale = (available.x / tex_size.x).min(available.y / tex_size.y);
-                    let display_size = tex_size * scale;
+            let mut source_ids: Vec<&String> = self.textures.keys().collect();
+            source_ids.sort();
 
-                    ui.vertical_centered(|ui| {
-                        ui.image(egui::load::SizedTexture::new(texture.id(), display_size));
-                        ui.label(format!("frame {}", self.frame_count));
-                    });
-                }
-                None => {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Loading…");
-                    });
-                }
+            if source_ids.is_empty() {
+                ui.centered_and_justified(|ui| { ui.label("Loading…"); });
+            } else {
+                let col_width = ui.available_width() / source_ids.len() as f32;
+                ui.columns(source_ids.len(), |cols| {
+                    for (i, id) in source_ids.iter().enumerate() {
+                        let texture = &self.textures[*id];
+                        let count = self.frame_counts.get(*id).copied().unwrap_or(0);
+
+                        let tex_size = texture.size_vec2();
+                        let available_h = cols[i].available_height() - 24.0; // reserve label
+                        let scale = (col_width / tex_size.x).min(available_h / tex_size.y);
+                        let display_size = tex_size * scale;
+
+                        cols[i].vertical_centered(|ui| {
+                            ui.image(egui::load::SizedTexture::new(texture.id(), display_size));
+                            ui.label(format!("{id}  —  frame {count}"));
+                        });
+                    }
+                });
             }
         });
 
-        // Keep repainting so new frames appear promptly.
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 }
@@ -228,7 +212,6 @@ fn download_test_video() -> PathBuf {
         return path;
     }
 
-    // 1 MB, 15 s clip, H.264/AAC, Creative Commons
     let url = "https://file-examples.com/storage/fe84a902ae6a1407994448f/2017/04/file_example_MP4_480_1_5MG.mp4";
 
     println!("Downloading test video from {url}");
