@@ -131,6 +131,13 @@ impl GstVideoSource {
         Ok(Self { pipeline, rx })
     }
 
+    /// Decompose into (pipeline, frame_receiver) so `GstMultiVideoSource` can rewire the channel.
+    pub(super) fn into_parts(
+        self,
+    ) -> (gst::Pipeline, mpsc::Receiver<Result<VideoFrame<GstFrameData>>>) {
+        (self.pipeline, self.rx)
+    }
+
     // --- private helpers ---
 
     fn from_pipeline_str(desc: &str) -> Result<Self> {

@@ -117,6 +117,7 @@ pub fn gst_sample_to_gst_frame(sample: gst::Sample) -> Result<VideoFrame<GstFram
     })?;
 
     Ok(VideoFrame {
+        source_id: None,
         width: info.width(),
         height: info.height(),
         format,

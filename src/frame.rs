@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::any::Any;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::Result;
@@ -35,6 +36,8 @@ impl FrameData for BytesFrameData {
 }
 
 pub struct VideoFrame<D: FrameData> {
+    /// Identifies which source produced this frame. `None` for single-source pipelines.
+    pub source_id: Option<Arc<str>>,
     pub width: u32,
     pub height: u32,
     pub format: PixelFormat,
@@ -46,6 +49,7 @@ pub struct VideoFrame<D: FrameData> {
 impl<D: FrameData + Clone> Clone for VideoFrame<D> {
     fn clone(&self) -> Self {
         Self {
+            source_id: self.source_id.clone(),
             width: self.width,
             height: self.height,
             format: self.format,

@@ -25,5 +25,6 @@ pub use transform::VideoTransform;
 
 #[cfg(feature = "gstreamer")]
 pub use backends::gstreamer::{
-    GstFrameData, GstPipeline, GstVideoDecoder, GstVideoEncoder, GstVideoSink, GstVideoSource,
+    GstFrameData, GstMultiVideoSource, GstPipeline, GstVideoDecoder, GstVideoEncoder,
+    GstVideoSink, GstVideoSource,
 };
