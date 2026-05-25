@@ -1,0 +1,37 @@
+[package]
+name = "streamer-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Backend-agnostic async library for streaming audio and video, with GStreamer as the first implementation."
+license = "AGPL-3.0-only"
+authors = ["SpinorML Ltd <hello@spinorml.com>"]
+repository = "https://github.com/spinorml/streamer-rs"
+homepage = "https://spinorml.com"
+documentation = "https://docs.rs/streamer-rs"
+readme = "README.md"
+keywords = ["video", "streaming", "gstreamer", "media", "async"]
+categories = ["multimedia", "multimedia::video", "asynchronous"]
+exclude = [".github/", "*.md.bak"]
+
+[features]
+default = ["gstreamer"]
+gstreamer = ["dep:gstreamer", "dep:gstreamer-video", "dep:gstreamer-app"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+async-trait = "0.1"
+bytes = "1"
+
+gstreamer = { version = "0.25.2", optional = true }
+gstreamer-video = { version = "0.25.2", optional = true }
+gstreamer-app = { version = "0.25.2", optional = true }
+
+[dev-dependencies]
+eframe = "0.31"
+ureq = "2"
+
+[[example]]
+name = "player"
+required-features = ["gstreamer"]
