@@ -15,7 +15,7 @@ use crate::source::VideoSource;
 use super::frame::GstFrameData;
 use super::utils;
 
-/// Captures video from a V4L2 device, a test source, or a local file.
+/// Captures video from a V4L2 device, a test source, a local file, or an RTSP stream.
 /// Produces `VideoFrame<GstFrameData>` — the GstBuffer is kept alive without a CPU copy.
 pub struct GstVideoSource {
     pub pipeline: gst::Pipeline,
@@ -27,6 +27,17 @@ impl GstVideoSource {
         utils::init();
         let pipeline_str = format!(
             "v4l2src device={device} ! videoconvert ! video/x-raw,format=I420 ! appsink name=sink sync=false"
+        );
+        Self::from_pipeline_str(&pipeline_str)
+    }
+
+    /// Open an RTSP stream. Handles reconnection and buffer management automatically.
+    ///
+    /// `url` must be a valid `rtsp://` URI, e.g. `rtsp://localhost:8554/live`.
+    pub fn from_rtsp(url: &str) -> Result<Self> {
+        utils::init();
+        let pipeline_str = format!(
+            "rtspsrc location={url} latency=0 ! decodebin ! videoconvert ! video/x-raw,format=I420 ! appsink name=sink sync=false"
         );
         Self::from_pipeline_str(&pipeline_str)
     }

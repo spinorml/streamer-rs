@@ -52,6 +52,25 @@ streamer-rs = { version = "0.1", default-features = false }
 
 ## Usage
 
+### Capture from an RTSP stream
+
+```rust
+use streamer_rs::{GstVideoSource, VideoSource};
+
+#[tokio::main]
+async fn main() -> streamer_rs::Result<()> {
+    let mut source = GstVideoSource::from_rtsp("rtsp://localhost:8554/live")?;
+    source.start().await?;
+
+    while let Some(frame) = source.next_frame().await? {
+        let bytes = frame.data.to_bytes().await?;
+        println!("frame {}x{} — {} bytes", frame.width, frame.height, bytes.len());
+    }
+
+    source.stop().await
+}
+```
+
 ### Capture from a camera
 
 ```rust
